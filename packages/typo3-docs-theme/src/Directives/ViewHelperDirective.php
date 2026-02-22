@@ -160,7 +160,7 @@ final class ViewHelperDirective extends BaseDirective
         $examples = [];
         if (str_contains($rawDocumentation, '```')) {
             $node = $this->markupLanguageParser->parse($blockContext->getDocumentParserContext()->getContext(), $rawDocumentation);
-            $collectionNode = new CollectionNode($node->getValue());
+            $collectionNode = new CollectionNode(array_values($node->getValue()));
             foreach ($node->getValue() as $node) {
                 if ($node instanceof ParagraphNode) {
                     $description[] = $node;

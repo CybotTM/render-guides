@@ -57,8 +57,8 @@ final class MigrateSettingsCommand extends Command
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $settingsFile = $input->getArgument('input') . '/Settings.cfg';
-        $guidesFile = $input->getArgument('input') . '/guides.xml';
+        $settingsFile = (string) $input->getArgument('input') . '/Settings.cfg';
+        $guidesFile = (string) $input->getArgument('input') . '/guides.xml';
 
         if (file_exists($guidesFile) && !$input->getOption('force')) {
             $output->writeln('<error>Target file already exists in specified directory (' . $guidesFile . ')</error>');

@@ -35,6 +35,7 @@ final class RedirectsNodeTransformer implements NodeTransformer
         return $node;
     }
 
+    /** @phpstan-ignore return.unusedType */
     public function leaveNode(Node $node, CompilerContextInterface $compilerContext): Node|null
     {
         assert($node instanceof CrossReferenceNode);

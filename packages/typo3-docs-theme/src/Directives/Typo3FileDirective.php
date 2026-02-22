@@ -43,6 +43,7 @@ final class Typo3FileDirective extends SubDirective
         return self::NAME;
     }
 
+    /** @phpstan-ignore return.unusedType */
     protected function processSub(
         BlockContext $blockContext,
         CollectionNode $collectionNode,

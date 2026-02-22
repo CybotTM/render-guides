@@ -98,7 +98,8 @@ final class InitCommand extends Command
             $composerInfo->getComposerName()
         );
         $projectNameQuestion->setValidator(function ($answer) {
-            if (is_null($answer) || trim($answer) === '') {
+            $answer = (string) $answer;
+            if (trim($answer) === '') {
                 throw new \RuntimeException('The project title cannot be empty.');
             }
             return $answer;
@@ -124,7 +125,7 @@ final class InitCommand extends Command
                 'https://gitlab.com/' . $composerInfo->getComposerName(),
             ]
         );
-        $repositoryUrl = $helper->ask($input, $output, $question);
+        $repositoryUrl = (string) $helper->ask($input, $output, $question);
 
         $question = $this->createValidatedUrlQuestion(
             'Where can users report issues?  <comment>[%s]</comment>',
@@ -149,6 +150,7 @@ final class InitCommand extends Command
 
         $question = new Question('Do you want generate some Documentation? (yes/no) ', 'yes');
         $question->setValidator(function ($answer) {
+            $answer = (string) $answer;
             if (!in_array(strtolower($answer), [
                 'yes',
                 'y',
@@ -172,7 +174,7 @@ final class InitCommand extends Command
         $siteSetDefinition = '';
         if (is_string($siteSet) && $siteSet !== '') {
             $question = new Question('Enter the path to your site set: ');
-            $siteSetPath = $helper->ask($input, $output, $question);
+            $siteSetPath = (string) $helper->ask($input, $output, $question);
             if (is_file($siteSetPath . '/settings.definitions.yaml')) {
                 $siteSetDefinition = $siteSetPath . '/settings.definitions.yaml';
             }
@@ -275,6 +277,7 @@ final class InitCommand extends Command
             return null;
         }
 
+        /** @var array<string, mixed> $composerJson */
         return $composerJson;
     }
 

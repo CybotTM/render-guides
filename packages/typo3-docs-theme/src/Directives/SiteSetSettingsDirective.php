@@ -102,7 +102,7 @@ final class SiteSetSettingsDirective extends BaseDirective
             if ($xml->loadXML($labelContents)) {
                 foreach ($xml->getElementsByTagName('trans-unit') as $label) {
                     $id = $label->getAttribute('id');
-                    $value = ($label->getElementsByTagName('source')[0] ?? null)?->textContent ?? '';
+                    $value = ($label->getElementsByTagName('source')[0] ?? null)->textContent ?? '';
                     if (!$value) {
                         continue;
                     }

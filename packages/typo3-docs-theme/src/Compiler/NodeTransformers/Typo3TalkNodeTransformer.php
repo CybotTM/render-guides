@@ -46,6 +46,7 @@ final class Typo3TalkNodeTransformer implements NodeTransformer
         return $node;
     }
 
+    /** @phpstan-ignore return.unusedType */
     public function leaveNode(Node $node, CompilerContextInterface $compilerContext): Node|null
     {
         if ($node instanceof DocumentNode) {
