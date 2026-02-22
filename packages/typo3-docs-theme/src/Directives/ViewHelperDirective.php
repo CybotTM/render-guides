@@ -171,8 +171,9 @@ final class ViewHelperDirective extends BaseDirective
         $examples = [];
         if (str_contains($rawDocumentation, '```')) {
             $documentNode = $this->markupLanguageParser->parse($blockContext->getDocumentParserContext()->getContext(), $rawDocumentation);
+            $rawValue = $documentNode->getValue();
             /** @var list<Node> $childNodes */
-            $childNodes = array_values($documentNode->getChildren());
+            $childNodes = is_array($rawValue) ? array_values($rawValue) : [];
             $collectionNode = new CollectionNode($childNodes);
             foreach ($childNodes as $childNode) {
                 if ($childNode instanceof ParagraphNode) {
@@ -185,9 +186,10 @@ final class ViewHelperDirective extends BaseDirective
         } else {
             $rstContentBlockContext = new BlockContext($blockContext->getDocumentParserContext(), $rawDocumentation, false);
             $parsedNode = $this->startingRule->apply($rstContentBlockContext);
-            $collectionNode = $parsedNode instanceof CollectionNode ? $parsedNode : new CollectionNode([]);
+            $rawValue = $parsedNode?->getValue();
             /** @var list<Node> $collectionChildren */
-            $collectionChildren = $collectionNode->getChildren();
+            $collectionChildren = is_array($rawValue) ? array_values($rawValue) : [];
+            $collectionNode = new CollectionNode($collectionChildren);
             foreach ($collectionChildren as $childNode) {
                 if (!$childNode instanceof SectionNode) {
                     $description[] = $childNode;
@@ -217,13 +219,16 @@ final class ViewHelperDirective extends BaseDirective
             $display =  array_map('trim', explode(',', $directive->getOptionString('display')));
         }
         $viewHelperId = $this->anchorNormalizer->reduceAnchor($className);
+        $rawDocs = $collectionNode->getValue();
+        /** @var list<Node> $documentationNodes */
+        $documentationNodes = is_array($rawDocs) ? $rawDocs : [];
         $viewHelperNode = new ViewHelperNode(
             id: $viewHelperId,
             tagName: $this->getString($data, 'tagName'),
             shortClassName: $shortClassName,
             namespace: $nameSpace,
             className: $className,
-            documentation: $collectionNode->getChildren(),
+            documentation: $documentationNodes,
             description: $description,
             sections: $sections,
             examples: $examples,
