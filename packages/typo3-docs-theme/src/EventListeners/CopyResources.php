@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace T3Docs\Typo3DocsTheme\EventListeners;
 
-use League\Flysystem\Adapter\Local;
 use League\Flysystem\Filesystem;
+use League\Flysystem\Local\LocalFilesystemAdapter;
 use phpDocumentor\Guides\Event\PostRenderProcess;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Finder\Finder;
@@ -35,9 +35,8 @@ final class CopyResources
             return;
         }
 
-        $source = new Filesystem(new Local($fullResourcesPath));
+        $source = new Filesystem(new LocalFilesystemAdapter($fullResourcesPath));
 
-        /** @var \League\Flysystem\FilesystemInterface */
         $destination = $event->getCommand()->getDestination();
 
         $finder = new Finder();
@@ -45,10 +44,6 @@ final class CopyResources
 
         foreach ($finder as $file) {
             $stream = $source->readStream($file->getRelativePathname());
-            if ($stream === false) {
-                $this->logger->warning(sprintf('Cannot read stream from "%s"', $file->getRealPath()));
-                continue;
-            }
 
             $destinationPath = sprintf(
                 '%s/%s%s',
