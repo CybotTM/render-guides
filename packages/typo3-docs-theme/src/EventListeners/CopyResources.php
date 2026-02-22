@@ -6,6 +6,7 @@ namespace T3Docs\Typo3DocsTheme\EventListeners;
 
 use League\Flysystem\Filesystem;
 use League\Flysystem\Local\LocalFilesystemAdapter;
+use League\Flysystem\UnableToReadFile;
 use phpDocumentor\Guides\Event\PostRenderProcess;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Finder\Finder;
@@ -43,7 +44,12 @@ final class CopyResources
         $finder->files()->in($fullResourcesPath);
 
         foreach ($finder as $file) {
-            $stream = $source->readStream($file->getRelativePathname());
+            try {
+                $stream = $source->readStream($file->getRelativePathname());
+            } catch (UnableToReadFile $e) {
+                $this->logger->warning(sprintf('Cannot read stream from "%s": %s', $file->getRealPath(), $e->getMessage()));
+                continue;
+            }
 
             $destinationPath = sprintf(
                 '%s/%s%s',
@@ -52,7 +58,7 @@ final class CopyResources
                 $file->getFilename()
             );
             $destination->putStream($destinationPath, $stream);
-            is_resource($stream) && fclose($stream);
+            fclose($stream);
         }
     }
 }
