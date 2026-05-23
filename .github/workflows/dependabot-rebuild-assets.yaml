@@ -1,0 +1,145 @@
+# Convenience workflow: on a Dependabot PR that bumps an npm dependency under
+# packages/typo3-docs-theme/, rebuild the committed assets and push them back
+# to the Dependabot branch.
+#
+# This is NOT the contract — check-built-assets.yaml is. If this workflow
+# fails (transient build error, token scope, allowlist drift), the check
+# workflow still catches the resulting stale assets and blocks the PR.
+#
+# Trigger: pull_request_target matches the local convention in
+# .github/workflows/pr-auto-merge.yaml ("due to permission issues with the
+# pull_request target"). Defense-in-depth on the pull_request_target form:
+#
+#   - if: github.actor == 'dependabot[bot]' actor gate
+#   - PR head pinned by SHA (not ref) — defeats TOCTOU between trigger
+#     and checkout if Dependabot force-pushes mid-flight
+#   - lockfile-only diff guard — refuses to build if the PR changed any
+#     file other than package.json / package-lock.json
+#   - npm ci --ignore-scripts — install lifecycle scripts cannot run
+#   - persist-credentials: false — GITHUB_TOKEN is NOT left in .git/config
+#     after checkout, so the build step (vite/grunt config + npm deps)
+#     cannot read it from the on-disk extraheader; the push uses an
+#     ephemeral `-c http.extraheader=...` so the token never lands on disk
+#   - block-mode harden-runner egress policy (added in the next commit)
+
+name: "Rebuild assets for Dependabot"
+
+on: # yamllint disable-line rule:truthy
+  pull_request_target:
+    paths:
+      - "packages/typo3-docs-theme/package.json"
+      - "packages/typo3-docs-theme/package-lock.json"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-commit:
+    name: "build-and-commit"
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "Harden runner"
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: block
+          disable-sudo: true
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            registry.npmjs.org:443
+
+      - name: "Checkout Dependabot branch"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: "Verify PR diff is lockfile-only"
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # A legitimate Dependabot npm PR only touches package.json and
+          # package-lock.json. Anything else means the branch was tampered
+          # with — fail closed before we execute vite/grunt config.
+          ALLOWED=(
+            packages/typo3-docs-theme/package.json
+            packages/typo3-docs-theme/package-lock.json
+          )
+
+          changed="$(git diff --name-only "$BASE_SHA"...HEAD)"
+          unexpected=""
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            match=0
+            for a in "${ALLOWED[@]}"; do
+              [ "$f" = "$a" ] && match=1 && break
+            done
+            [ $match -eq 0 ] && unexpected="${unexpected}${f}"$'\n'
+          done <<< "$changed"
+
+          if [ -n "$unexpected" ]; then
+            echo "::error::Dependabot PR touches files outside the npm lockfile set. Refusing to build."
+            printf '%s' "$unexpected"
+            exit 1
+          fi
+
+      - name: "Install Node"
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: "packages/typo3-docs-theme/package.json"
+          cache: "npm"
+          cache-dependency-path: "packages/typo3-docs-theme/package-lock.json"
+
+      - name: "Install npm dependencies (no install scripts)"
+        working-directory: packages/typo3-docs-theme
+        run: "npm ci --ignore-scripts"
+
+      - name: "Build assets"
+        working-directory: packages/typo3-docs-theme
+        run: "npm run build"
+
+      - name: "Commit and push rebuilt assets if changed"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_AUTHOR_NAME: "dependabot[bot]"
+          GIT_AUTHOR_EMAIL: "49699333+dependabot[bot]@users.noreply.github.com"
+          GIT_COMMITTER_NAME: "dependabot[bot]"
+          GIT_COMMITTER_EMAIL: "49699333+dependabot[bot]@users.noreply.github.com"
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          ASSET_PATHS=(
+            packages/typo3-docs-theme/assets
+            packages/typo3-docs-theme/resources/public
+          )
+
+          # Refuse to commit if the build introduced unexpected new files in
+          # the asset trees — only tracked files should change.
+          untracked="$(git ls-files --others --exclude-standard -- "${ASSET_PATHS[@]}")"
+          if [ -n "$untracked" ]; then
+            echo "::error::Build produced unexpected untracked files in the asset trees. Refusing to commit."
+            printf '%s\n' "$untracked"
+            exit 1
+          fi
+
+          if git diff --quiet -- "${ASSET_PATHS[@]}"; then
+            echo "No generated asset changes."
+            exit 0
+          fi
+
+          git add --update -- "${ASSET_PATHS[@]}"
+          git commit -m "[TASK] Rebuild theme assets after dependency update"
+
+          # Ephemeral auth: token is only present in the env for THIS command,
+          # never written to .git/config. The build step above ran with
+          # persist-credentials: false, so no on-disk extraheader existed
+          # during build.
+          auth_b64="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=Authorization: Basic $auth_b64" \
+              push origin "HEAD:refs/heads/$HEAD_REF"
