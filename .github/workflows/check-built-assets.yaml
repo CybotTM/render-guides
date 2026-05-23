@@ -73,6 +73,9 @@ jobs:
             exit 0
           fi
 
+          # Full diagnostics go to the log; the ::error:: annotation is a
+          # single concise line so the PR Files-changed view doesn't get
+          # cluttered with one annotation per echo.
           echo "Files out of sync with current build:"
           if [ -n "$modified" ]; then
             printf '%s\n' "$modified" | sed 's/^/  modified: /'
@@ -81,8 +84,10 @@ jobs:
             printf '%s\n' "$untracked" | sed 's/^/  untracked: /'
           fi
           echo ""
-          echo "::error::Generated assets are out of date. Reproduce locally with:"
-          echo "::error::  cd packages/typo3-docs-theme && npm ci && npm run build"
-          echo "::error::Then 'git add assets resources/public && git commit'."
-          echo "::error::See Documentation/Developer/ThemeCustomization.rst for context."
+          echo "Reproduce locally:"
+          echo "  cd packages/typo3-docs-theme && npm ci && npm run build"
+          echo "  git add assets resources/public && git commit"
+          echo ""
+          echo "See Documentation/Developer/ThemeCustomization.rst for context."
+          echo "::error::Generated assets are out of date. Run 'npm ci && npm run build' in packages/typo3-docs-theme/ and commit the regenerated assets. See run log for affected files."
           exit 1
