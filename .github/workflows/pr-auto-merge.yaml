@@ -33,12 +33,12 @@ jobs:
         if: |
           (steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
            steps.metadata.outputs.update-type == 'version-update:semver-minor') &&
-          steps.metadata.outputs.directory != '/packages/typo3-docs-theme/'
+          !contains(steps.metadata.outputs.directory, 'typo3-docs-theme')
         run: gh pr merge -R "${{ github.repository }}" --squash --auto "${{ github.event.pull_request.number }}"
         env:
           GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
 
       - name: Note skipped auto-merge for theme PRs
-        if: steps.metadata.outputs.directory == '/packages/typo3-docs-theme/'
+        if: contains(steps.metadata.outputs.directory, 'typo3-docs-theme')
         run: |
           echo "::notice::Auto-merge intentionally skipped for theme PRs. The dependabot-rebuild-assets workflow rebuilds and pushes regenerated assets to this branch; merge manually once that commit lands and all checks are green."
