@@ -143,3 +143,29 @@ jobs:
           auth_b64="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
           git -c "http.https://github.com/.extraheader=Authorization: Basic $auth_b64" \
               push origin "HEAD:refs/heads/$HEAD_REF"
+
+      # Auto-merge is enabled HERE — after the rebuild commit (if any) is on
+      # the branch — instead of in pr-auto-merge.yaml. That workflow fires at
+      # PR-open time and would squash-merge before this rebuild completes,
+      # leaving stale assets on the target branch (the race that this branch
+      # excludes theme PRs from). Gating the merge on this workflow's progress
+      # is the point: a broken build, the lockfile-only guard, or the
+      # untracked-file guard each fail an earlier step and never reach this,
+      # so a bad upgrade stays open for manual review.
+      #
+      # A previous step's `exit 0` (the "no generated asset changes" path)
+      # only ends that step's script, not the job — so these steps still run
+      # whether or not a rebuild commit was pushed.
+      - name: "Dependabot metadata"
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: "Enable auto-merge for patch/minor updates"
+        if: |
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --squash --auto "${{ github.event.pull_request.number }}" -R "${{ github.repository }}"
