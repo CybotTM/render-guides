@@ -2,7 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import GlobalSearch from './components/GlobalSearch';
 
-export const PROXY_URL = 'https://docs.typo3.org';
+export const PROXY_URL = 'https://docs.typo3.org/h12-norebuild';
 
 document.addEventListener('DOMContentLoaded', () => {
     const container = document.getElementById('global-search-root');
