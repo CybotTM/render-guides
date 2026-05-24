@@ -52,6 +52,20 @@ jobs:
             release-assets.githubusercontent.com:443
             registry.npmjs.org:443
 
+      # Mint a short-lived (1h) installation token from the GitHub App.
+      # Unlike GITHUB_TOKEN, a push authenticated as the App DOES re-trigger
+      # workflows — so the rebuild commit gets its own run of verify/Tests
+      # (closing the "checks only run on the original commit" gap). The App
+      # private key never touches the build step; this only mints the token.
+      # JWT mode (private-key) talks to api.github.com only — already in the
+      # harden-runner allowlist above.
+      - name: "Mint App token"
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.REBUILD_APP_ID }}
+          private-key: ${{ secrets.REBUILD_APP_PRIVATE_KEY }}
+
       - name: "Checkout Dependabot branch"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -107,7 +121,7 @@ jobs:
 
       - name: "Commit and push rebuilt assets if changed"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
           GIT_AUTHOR_NAME: "dependabot[bot]"
           GIT_AUTHOR_EMAIL: "49699333+dependabot[bot]@users.noreply.github.com"
           GIT_COMMITTER_NAME: "dependabot[bot]"
@@ -136,11 +150,12 @@ jobs:
           git add --update -- "${ASSET_PATHS[@]}"
           git commit -m "[TASK] Rebuild theme assets after dependency update"
 
-          # Ephemeral auth: token is only present in the env for THIS command,
-          # never written to .git/config. The build step above ran with
-          # persist-credentials: false, so no on-disk extraheader existed
-          # during build.
-          auth_b64="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          # Ephemeral auth: the App token is only present in the env for THIS
+          # command, never written to .git/config. The build step above ran
+          # with persist-credentials: false, so no on-disk extraheader existed
+          # during build. Pushing as the App (not GITHUB_TOKEN) is what makes
+          # the rebuild commit re-trigger verify/Tests on the new SHA.
+          auth_b64="$(printf 'x-access-token:%s' "$GH_APP_TOKEN" | base64 -w0)"
           git -c "http.https://github.com/.extraheader=Authorization: Basic $auth_b64" \
               push origin "HEAD:refs/heads/$HEAD_REF"
 
@@ -167,5 +182,5 @@ jobs:
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: gh pr merge --squash --auto "${{ github.event.pull_request.number }}" -R "${{ github.repository }}"
