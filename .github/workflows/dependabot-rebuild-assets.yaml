@@ -33,14 +33,19 @@ on: # yamllint disable-line rule:truthy
       - "packages/typo3-docs-theme/package.json"
       - "packages/typo3-docs-theme/package-lock.json"
 
-permissions:
-  contents: write
+# The GITHUB_TOKEN only needs read access: it is used solely by
+# dependabot/fetch-metadata. All writes (the rebuild commit and enabling
+# auto-merge) go through the GitHub App installation token, whose
+# permissions come from the App, not this block.
+permissions: {}
 
 jobs:
   build-and-commit:
     name: "build-and-commit"
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: "Harden runner"
