@@ -76,3 +76,5 @@ Contributing
 ============
 
 See the `Contributing Guide <https://docs.typo3.org/permalink/t3renderguides:contributing>`__ for more information.
+
+.. test: non-theme change to validate check-built-assets skip path
