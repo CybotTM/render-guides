@@ -16,10 +16,13 @@
 #   - lockfile-only diff guard — refuses to build if the PR changed any
 #     file other than package.json / package-lock.json
 #   - npm ci --ignore-scripts — install lifecycle scripts cannot run
-#   - persist-credentials: false — GITHUB_TOKEN is NOT left in .git/config
-#     after checkout, so the build step (vite/grunt config + npm deps)
-#     cannot read it from the on-disk extraheader; the push uses an
-#     ephemeral `-c http.extraheader=...` so the token never lands on disk
+#   - persist-credentials: false — no token is left in .git/config after
+#     checkout, so the build step (vite/grunt config + npm deps) cannot read
+#     a credential off disk
+#   - the rebuilt files are committed via the GitHub API
+#     (createCommitOnBranch) using a short-lived GitHub App token, never via
+#     `git push`. API commits are signed server-side by GitHub (Verified),
+#     and an App-token commit still re-triggers verify/Tests on the new SHA.
 #   - block-mode harden-runner egress policy (added in the next commit)
 
 name: "Rebuild assets for Dependabot"
@@ -119,22 +122,17 @@ jobs:
         working-directory: packages/typo3-docs-theme
         run: "npm run build"
 
-      - name: "Commit and push rebuilt assets if changed"
-        env:
-          GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
-          GIT_AUTHOR_NAME: "dependabot[bot]"
-          GIT_AUTHOR_EMAIL: "49699333+dependabot[bot]@users.noreply.github.com"
-          GIT_COMMITTER_NAME: "dependabot[bot]"
-          GIT_COMMITTER_EMAIL: "49699333+dependabot[bot]@users.noreply.github.com"
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      # Inspect the asset trees in shell (git output stays in shell, never
+      # interpolated into JS): reject unexpected new files, record the
+      # changed-file status to a temp file, and expose the current head SHA.
+      - name: "Prepare verified commit inputs"
+        id: prepare
         run: |
           ASSET_PATHS=(
             packages/typo3-docs-theme/assets
             packages/typo3-docs-theme/resources/public
           )
 
-          # Refuse to commit if the build introduced unexpected new files in
-          # the asset trees — only tracked files should change.
           untracked="$(git ls-files --others --exclude-standard -- "${ASSET_PATHS[@]}")"
           if [ -n "$untracked" ]; then
             echo "::error::Build produced unexpected untracked files in the asset trees. Refusing to commit."
@@ -142,22 +140,74 @@ jobs:
             exit 1
           fi
 
-          if git diff --quiet -- "${ASSET_PATHS[@]}"; then
-            echo "No generated asset changes."
-            exit 0
-          fi
+          git diff --name-status -- "${ASSET_PATHS[@]}" > "$RUNNER_TEMP/asset-changes.tsv"
+          echo "head_oid=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-          git add --update -- "${ASSET_PATHS[@]}"
-          git commit -m "[TASK] Rebuild theme assets after dependency update"
+      # Commit rebuilt files via the GitHub API (createCommitOnBranch) rather
+      # than `git commit`/`git push`. A commit created through the API is
+      # signed server-side by GitHub, so it shows as "Verified" — a plain git
+      # push over HTTPS cannot be signed without a key on the runner. Because
+      # it is created with the App token (not GITHUB_TOKEN) the push still
+      # re-triggers verify/Tests on the new commit. The commit is authored by
+      # the App, not dependabot[bot]: GitHub only signs commits it attributes
+      # to the token holder.
+      - name: "Commit rebuilt assets as a verified commit (if changed)"
+        uses: actions/github-script@d746ffe35508b1917358783b479e04febd2b8f71 # v9.0.0
+        env:
+          EXPECTED_HEAD_OID: ${{ steps.prepare.outputs.head_oid }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const fs = require('fs');
 
-          # Ephemeral auth: the App token is only present in the env for THIS
-          # command, never written to .git/config. The build step above ran
-          # with persist-credentials: false, so no on-disk extraheader existed
-          # during build. Pushing as the App (not GITHUB_TOKEN) is what makes
-          # the rebuild commit re-trigger verify/Tests on the new SHA.
-          auth_b64="$(printf 'x-access-token:%s' "$GH_APP_TOKEN" | base64 -w0)"
-          git -c "http.https://github.com/.extraheader=Authorization: Basic $auth_b64" \
-              push origin "HEAD:refs/heads/$HEAD_REF"
+            const nameStatus = fs
+              .readFileSync(`${process.env.RUNNER_TEMP}/asset-changes.tsv`, 'utf8')
+              .trim();
+
+            if (!nameStatus) {
+              core.info('No generated asset changes.');
+              return;
+            }
+
+            const additions = [];
+            const deletions = [];
+            for (const line of nameStatus.split('\n')) {
+              const parts = line.split('\t');
+              const status = parts[0];
+              const path = parts[parts.length - 1];
+              if (status.startsWith('D')) {
+                deletions.push({ path });
+              } else {
+                additions.push({
+                  path,
+                  contents: fs.readFileSync(path).toString('base64'),
+                });
+              }
+            }
+
+            const fileChanges = { additions };
+            if (deletions.length) fileChanges.deletions = deletions;
+
+            const result = await github.graphql(
+              `mutation($input: CreateCommitOnBranchInput!) {
+                 createCommitOnBranch(input: $input) { commit { oid url } }
+               }`,
+              {
+                input: {
+                  branch: {
+                    repositoryNameWithOwner: context.payload.repository.full_name,
+                    branchName: context.payload.pull_request.head.ref,
+                  },
+                  expectedHeadOid: process.env.EXPECTED_HEAD_OID,
+                  message: { headline: '[TASK] Rebuild theme assets after dependency update' },
+                  fileChanges,
+                },
+              }
+            );
+
+            const commit = result.createCommitOnBranch.commit;
+            core.info(`Created verified rebuild commit ${commit.oid}`);
+            core.info(commit.url);
 
       # Auto-merge is enabled HERE — after the rebuild commit (if any) is on
       # the branch — instead of in pr-auto-merge.yaml. That workflow fires at
