@@ -1,29 +1,29 @@
 # Convenience workflow: on a Dependabot PR that bumps an npm dependency under
-# packages/typo3-docs-theme/, rebuild the committed assets and push them back
-# to the Dependabot branch.
+# packages/typo3-docs-theme/, rebuild the committed assets and commit them
+# back to the Dependabot branch, then enable auto-merge.
 #
 # This is NOT the contract — check-built-assets.yaml is. If this workflow
-# fails (transient build error, token scope, allowlist drift), the check
-# workflow still catches the resulting stale assets and blocks the PR.
+# fails, that check still catches the resulting stale assets and blocks the PR.
 #
 # Trigger: pull_request_target matches the local convention in
 # .github/workflows/pr-auto-merge.yaml ("due to permission issues with the
-# pull_request target"). Defense-in-depth on the pull_request_target form:
+# pull_request target"). Because pull_request_target runs in the base-repo
+# context, several guards keep it safe:
 #
-#   - if: github.actor == 'dependabot[bot]' actor gate
-#   - PR head pinned by SHA (not ref) — defeats TOCTOU between trigger
-#     and checkout if Dependabot force-pushes mid-flight
-#   - lockfile-only diff guard — refuses to build if the PR changed any
-#     file other than package.json / package-lock.json
-#   - npm ci --ignore-scripts — install lifecycle scripts cannot run
-#   - persist-credentials: false — no token is left in .git/config after
-#     checkout, so the build step (vite/grunt config + npm deps) cannot read
-#     a credential off disk
-#   - the rebuilt files are committed via the GitHub API
-#     (createCommitOnBranch) using a short-lived GitHub App token, never via
-#     `git push`. API commits are signed server-side by GitHub (Verified),
-#     and an App-token commit still re-triggers verify/Tests on the new SHA.
-#   - block-mode harden-runner egress policy (added in the next commit)
+#   - if: github.actor == 'dependabot[bot]'
+#   - checkout pinned to the PR head SHA, so if Dependabot force-pushes
+#     between the trigger and the checkout we still build the exact commit
+#     the PR opened with
+#   - lockfile-only diff guard: refuse to build if the PR changed anything
+#     other than package.json / package-lock.json
+#   - npm ci --ignore-scripts; harden-runner egress in block mode
+#   - the App token is minted AFTER the build, so the untrusted build cannot
+#     read it; persist-credentials: false keeps it off disk
+#
+# The rebuilt files are committed via the GitHub API (createCommitOnBranch)
+# with a short-lived GitHub App token, never `git push`. API commits are
+# signed server-side by GitHub (Verified), and an App-token commit re-triggers
+# the asset check on the new commit, so the merged commit is itself checked.
 
 name: "Rebuild assets for Dependabot"
 
@@ -33,10 +33,8 @@ on: # yamllint disable-line rule:truthy
       - "packages/typo3-docs-theme/package.json"
       - "packages/typo3-docs-theme/package-lock.json"
 
-# The GITHUB_TOKEN only needs read access: it is used solely by
-# dependabot/fetch-metadata. All writes (the rebuild commit and enabling
-# auto-merge) go through the GitHub App installation token, whose
-# permissions come from the App, not this block.
+# GITHUB_TOKEN stays read-only — it is used only by dependabot/fetch-metadata.
+# All writes go through the GitHub App token, whose scope comes from the App.
 permissions: {}
 
 jobs:
@@ -60,20 +58,6 @@ jobs:
             release-assets.githubusercontent.com:443
             registry.npmjs.org:443
 
-      # Mint a short-lived (1h) installation token from the GitHub App.
-      # Unlike GITHUB_TOKEN, a push authenticated as the App DOES re-trigger
-      # workflows — so the rebuild commit gets its own run of verify/Tests
-      # (closing the "checks only run on the original commit" gap). The App
-      # private key never touches the build step; this only mints the token.
-      # JWT mode (private-key) talks to api.github.com only — already in the
-      # harden-runner allowlist above.
-      - name: "Mint App token"
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-
       - name: "Checkout Dependabot branch"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -84,7 +68,6 @@ jobs:
 
       - name: "Verify PR diff is lockfile-only"
         env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           # A legitimate Dependabot npm PR only touches package.json and
@@ -127,10 +110,11 @@ jobs:
         working-directory: packages/typo3-docs-theme
         run: "npm run build"
 
-      # Inspect the asset trees in shell (git output stays in shell, never
-      # interpolated into JS): reject unexpected new files, record the
-      # changed-file status to a temp file, and expose the current head SHA.
-      - name: "Prepare verified commit inputs"
+      # Inspect the asset trees in shell so git output never crosses into JS.
+      # Reject unexpected new files, then record changed/deleted paths
+      # NUL-delimited (-z, --no-renames) so filenames with odd characters
+      # can't skew parsing.
+      - name: "Prepare commit inputs"
         id: prepare
         run: |
           ASSET_PATHS=(
@@ -145,17 +129,23 @@ jobs:
             exit 1
           fi
 
-          git diff --name-status -- "${ASSET_PATHS[@]}" > "$RUNNER_TEMP/asset-changes.tsv"
+          git diff -z --name-only --no-renames --diff-filter=d -- "${ASSET_PATHS[@]}" > "$RUNNER_TEMP/asset-upserts"
+          git diff -z --name-only --no-renames --diff-filter=D -- "${ASSET_PATHS[@]}" > "$RUNNER_TEMP/asset-deletes"
           echo "head_oid=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      # Commit rebuilt files via the GitHub API (createCommitOnBranch) rather
-      # than `git commit`/`git push`. A commit created through the API is
-      # signed server-side by GitHub, so it shows as "Verified" — a plain git
-      # push over HTTPS cannot be signed without a key on the runner. Because
-      # it is created with the App token (not GITHUB_TOKEN) the push still
-      # re-triggers verify/Tests on the new commit. The commit is authored by
-      # the App, not dependabot[bot]: GitHub only signs commits it attributes
-      # to the token holder.
+      # Mint the App token here — AFTER the untrusted build — so a compromised
+      # build dependency cannot read it. The push as the App (not GITHUB_TOKEN)
+      # is what re-triggers the asset check on the rebuild commit.
+      - name: "Mint App token"
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      # Commit via the GitHub API so the commit is GitHub-signed (Verified).
+      # The commit is authored by the App (the token holder) — GitHub only
+      # signs commits it attributes to the token holder.
       - name: "Commit rebuilt assets as a verified commit (if changed)"
         uses: actions/github-script@d746ffe35508b1917358783b479e04febd2b8f71 # v9.0.0
         env:
@@ -164,34 +154,29 @@ jobs:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const fs = require('fs');
+            const readPaths = (name) =>
+              fs.readFileSync(`${process.env.RUNNER_TEMP}/${name}`)
+                .toString('utf8')
+                .split('\0')
+                .filter(Boolean);
 
-            const nameStatus = fs
-              .readFileSync(`${process.env.RUNNER_TEMP}/asset-changes.tsv`, 'utf8')
-              .trim();
+            const upserts = readPaths('asset-upserts');   // added or modified
+            const deletes = readPaths('asset-deletes');
 
-            if (!nameStatus) {
+            if (upserts.length === 0 && deletes.length === 0) {
               core.info('No generated asset changes.');
               return;
             }
 
-            const additions = [];
-            const deletions = [];
-            for (const line of nameStatus.split('\n')) {
-              const parts = line.split('\t');
-              const status = parts[0];
-              const path = parts[parts.length - 1];
-              if (status.startsWith('D')) {
-                deletions.push({ path });
-              } else {
-                additions.push({
-                  path,
-                  contents: fs.readFileSync(path).toString('base64'),
-                });
-              }
+            const fileChanges = {
+              additions: upserts.map((path) => ({
+                path,
+                contents: fs.readFileSync(path).toString('base64'),
+              })),
+            };
+            if (deletes.length) {
+              fileChanges.deletions = deletes.map((path) => ({ path }));
             }
-
-            const fileChanges = { additions };
-            if (deletions.length) fileChanges.deletions = deletions;
 
             const result = await github.graphql(
               `mutation($input: CreateCommitOnBranchInput!) {
@@ -214,18 +199,10 @@ jobs:
             core.info(`Created verified rebuild commit ${commit.oid}`);
             core.info(commit.url);
 
-      # Auto-merge is enabled HERE — after the rebuild commit (if any) is on
-      # the branch — instead of in pr-auto-merge.yaml. That workflow fires at
-      # PR-open time and would squash-merge before this rebuild completes,
-      # leaving stale assets on the target branch (the race that this branch
-      # excludes theme PRs from). Gating the merge on this workflow's progress
-      # is the point: a broken build, the lockfile-only guard, or the
-      # untracked-file guard each fail an earlier step and never reach this,
-      # so a bad upgrade stays open for manual review.
-      #
-      # A previous step's `exit 0` (the "no generated asset changes" path)
-      # only ends that step's script, not the job — so these steps still run
-      # whether or not a rebuild commit was pushed.
+      # Enable auto-merge AFTER the rebuild commit is in place. pr-auto-merge.yaml
+      # excludes these PRs (it would otherwise squash-merge before the rebuild
+      # lands). A broken build or a tripped guard fails an earlier step and never
+      # reaches this, so a bad upgrade stays open for manual review.
       - name: "Dependabot metadata"
         id: metadata
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
