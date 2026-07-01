@@ -48,6 +48,10 @@
                             {% block menu_doc %}
                             {% endblock %}
                         </div>
+                        <div class="toc-options d-lg-none">
+                            <p class="caption">Options</p>
+                            {% include "structure/layoutParts/optionsMenu.html.twig" %}
+                        </div>
                     </div>
                 </nav>
             </div>
@@ -69,9 +73,9 @@
 
     {% include "structure/layoutParts/linkReferenceModal.html.twig" %}
     {% include "structure/layoutParts/generalModal.html.twig" %}
+    {% include "structure/layoutParts/footer.html.twig" %}
 </div>
 
-{% include "structure/layoutParts/footer.html.twig" %}
 {% include "structure/layoutParts/footerAssets.html.twig" %}
 </body>
 </html>
