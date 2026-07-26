@@ -1,14 +1,15 @@
 import React, { forwardRef } from 'react';
+import { sanitizeHighlight } from '../utils/sanitizeHtml';
 
 const Icon = ({ type }) => {
     switch (type) {
-        case 'search': return <i className="fa fa-search" />;
+        case 'search': return <i className="fa-solid fa-magnifying-glass" />;
         case 'file': return <i className="fa-regular fa-file-code" />;
         default: return null;
     }
 };
 
-const ScopeContent = ({ scopes, title, type, packageName }) => {
+const ScopeContent = ({ scopes, title, type, packageName, titleIsHtml }) => {
     if (scopes?.length > 0) {
         return (
             <>
@@ -28,7 +29,9 @@ const ScopeContent = ({ scopes, title, type, packageName }) => {
     return (
         <div className='suggest-row__scope' title={`${title}${packageName ? ` (${packageName})` : ''}`}>
             <p className="suggest-row__scope-type">{type && `${type}:`}</p>
-            <p className="suggest-row__title" dangerouslySetInnerHTML={{ __html: title }} />
+            {titleIsHtml
+                ? <p className="suggest-row__title" dangerouslySetInnerHTML={{ __html: sanitizeHighlight(title) }} />
+                : <p className="suggest-row__title">{title}</p>}
             {packageName && <p className="suggest-row__description">({packageName})</p>}
         </div>
     );
@@ -43,7 +46,8 @@ const SuggestRow = forwardRef(({
     type,
     href,
     isActive,
-    icon = 'search'
+    icon = 'search',
+    titleIsHtml = false
 }, ref) => {
     const handleOnClick = (e) => {
         if (!href) {
@@ -68,6 +72,7 @@ const SuggestRow = forwardRef(({
                     title={title}
                     type={type}
                     packageName={packageName}
+                    titleIsHtml={titleIsHtml}
                 />
             </div>
             {tooltip && <p className="suggest-row__tooltip">{tooltip}</p>}
