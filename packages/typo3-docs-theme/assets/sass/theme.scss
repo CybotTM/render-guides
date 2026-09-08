@@ -7,12 +7,8 @@
 
 // Variables
 @import 'variables';
-@import '../../node_modules/bootstrap/scss/bootstrap-reboot';
 
 // Dependencies
-@import '../../node_modules/@fortawesome/fontawesome-free/scss/functions';
-@import '../../node_modules/@fortawesome/fontawesome-free/scss/variables';
-@import '../../node_modules/@fortawesome/fontawesome-free/scss/mixins';
 @import '../../node_modules/bootstrap/scss/bootstrap';
 
 // Mixings
@@ -37,7 +33,6 @@
 @import 'components/math';
 @import 'components/menu';
 @import 'components/pagination';
-@import 'components/panel';
 @import 'components/permalink';
 @import 'components/rst';
 @import 'components/table';
