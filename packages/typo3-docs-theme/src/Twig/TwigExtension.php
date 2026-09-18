@@ -7,6 +7,8 @@ namespace T3Docs\Typo3DocsTheme\Twig;
 use League\Flysystem\FilesystemException;
 use LogicException;
 use phpDocumentor\Guides\Nodes\AnchorNode;
+use phpDocumentor\Guides\Nodes\CompoundNode;
+use phpDocumentor\Guides\Nodes\DocumentNode;
 use phpDocumentor\Guides\Nodes\DocumentTree\DocumentEntryNode;
 use phpDocumentor\Guides\Nodes\LinkTargetNode;
 use phpDocumentor\Guides\Nodes\Metadata\NoSearchNode;
@@ -14,6 +16,7 @@ use phpDocumentor\Guides\Nodes\Metadata\OrphanNode;
 use phpDocumentor\Guides\Nodes\Node;
 use phpDocumentor\Guides\Nodes\PrefixedLinkTargetNode;
 use phpDocumentor\Guides\Nodes\SectionNode;
+use phpDocumentor\Guides\Nodes\TitleNode;
 use phpDocumentor\Guides\ReferenceResolvers\AnchorNormalizer;
 use phpDocumentor\Guides\ReferenceResolvers\DocumentNameResolverInterface;
 use phpDocumentor\Guides\RenderContext;
@@ -21,8 +24,10 @@ use phpDocumentor\Guides\Renderer\UrlGenerator\UrlGeneratorInterface;
 use phpDocumentor\Guides\RestructuredText\Nodes\ConfvalNode;
 use Psr\Log\LoggerInterface;
 use RuntimeException;
+use Throwable;
 use T3Docs\GuidesPhpDomain\Nodes\PhpComponentNode;
 use T3Docs\GuidesPhpDomain\Nodes\PhpMemberNode;
+use T3Docs\Typo3DocsTheme\Changelog\ChangelogEntry;
 use T3Docs\Typo3DocsTheme\Directives\SiteSetSettingsDirective;
 use T3Docs\Typo3DocsTheme\Inventory\Typo3VersionService;
 use T3Docs\Typo3DocsTheme\Nodes\Metadata\EditOnGitHubNode;
@@ -31,7 +36,9 @@ use T3Docs\Typo3DocsTheme\Nodes\PageLinkNode;
 use T3Docs\Typo3DocsTheme\Nodes\Typo3FileNode;
 use T3Docs\Typo3DocsTheme\Nodes\ViewHelperArgumentNode;
 use T3Docs\Typo3DocsTheme\Nodes\ViewHelperNode;
+use T3Docs\Typo3DocsTheme\Permalinks\Permalinks;
 use T3Docs\Typo3DocsTheme\Settings\Typo3DocsThemeSettings;
+use T3Docs\Typo3DocsThemeMd\Anchors\AddressableAnchors;
 use T3Docs\VersionHandling\DefaultInventories;
 use T3Docs\VersionHandling\Typo3VersionMapping;
 use Twig\Extension\AbstractExtension;
@@ -54,7 +61,28 @@ final class TwigExtension extends AbstractExtension
      */
     public const BRACKETS_BREAK_REGEX = '/(?<!^)([\[\(\{\<\|])/';
 
+    /**
+     * Where a Forge issue lives. Spelled out as data rather than left for the
+     * reader to assemble from "issue".
+     */
+    private const FORGE_ISSUE_URL = 'https://forge.typo3.org/issues/';
+
     private string $typo3AzureEdgeURI = '';
+
+    /**
+     * Documents already reported for a missing "interlink-shortcode", so the
+     * configuration problem is stated once and not once per link.
+     *
+     * @var array<string, true>
+     */
+    private array $reportedMissingShortcode = [];
+
+    /**
+     * Documents already reported for an unusable project version.
+     *
+     * @var array<string, true>
+     */
+    private array $reportedMissingVersion = [];
 
     public function __construct(
         private readonly LoggerInterface               $logger,
@@ -63,6 +91,8 @@ final class TwigExtension extends AbstractExtension
         private readonly DocumentNameResolverInterface $documentNameResolver,
         private readonly Typo3VersionService           $typo3VersionService,
         private readonly AnchorNormalizer              $anchorNormalizer,
+        private readonly ChangelogEntry                $changelogEntry,
+        private readonly Permalinks                    $permalinks,
     ) {
         if (strlen((string)getenv('GITHUB_ACTIONS')) > 0 && strlen((string)getenv('TYPO3AZUREEDGEURIVERSION')) > 0 && !isset($_ENV['CI_PHPUNIT'])) {
             // CI gets special treatment, then we use a fixed URI for assets.
@@ -87,6 +117,18 @@ final class TwigExtension extends AbstractExtension
             new TwigFunction('getReportIssueLink', $this->getReportIssueLink(...), ['needs_context' => true]),
             new TwigFunction('getCurrentFilename', $this->getCurrentFilename(...), ['needs_context' => true]),
             new TwigFunction('sourceFilename', $this->getSourceFilename(...), ['needs_context' => true]),
+            new TwigFunction('markdownAlternate', $this->getMarkdownAlternate(...), ['needs_context' => true]),
+            new TwigFunction('markdownDownloadName', $this->getMarkdownDownloadName(...), ['needs_context' => true]),
+            new TwigFunction('markdownLinkUrl', $this->getMarkdownLinkUrl(...), ['needs_context' => true]),
+            new TwigFunction('markdownSectionAnchors', $this->getMarkdownSectionAnchors(...), ['needs_context' => true]),
+            new TwigFunction('headingId', $this->getHeadingId(...), ['needs_context' => true]),
+            new TwigFunction('sectionIdOfAnchor', $this->getSectionIdOfAnchor(...), ['needs_context' => true]),
+            new TwigFunction('isSitemap', $this->isSitemap(...)),
+            new TwigFunction('changelogMetadata', $this->getChangelogMetadata(...), ['needs_context' => true]),
+            new TwigFunction('pagePermalink', $this->getPagePermalink(...), ['needs_context' => true]),
+            new TwigFunction('markdownVersion', $this->getMarkdownVersion(...), ['needs_context' => true]),
+            new TwigFunction('markdownIsStartPage', $this->isMarkdownStartPage(...), ['needs_context' => true]),
+            new TwigFunction('getViewSourceLink', $this->getViewSourceLink(...), ['needs_context' => true]),
             new TwigFunction('getRelativePath', $this->getRelativePath(...), ['needs_context' => true]),
             new TwigFunction('getPagerLinks', $this->getPagerLinks(...), ['is_safe' => ['html'], 'needs_context' => true]),
             new TwigFunction('getPrevNextLinks', $this->getPrevNextLinks(...), ['is_safe' => ['html'], 'needs_context' => true]),
@@ -277,6 +319,275 @@ final class TwigExtension extends AbstractExtension
     }
 
     /**
+     * The ids a link inside the single Markdown file may point at for this
+     * section.
+     *
+     * Markdown has no way to give a heading an id, so the single-file output
+     * writes an empty HTML anchor before each one. Which id a link carries
+     * depends on how it was written -- an explicit label, or the heading it
+     * points at -- so both are offered, and a section may end up with two.
+     *
+     * Both have to be registered as a "std:label" to be written, which is the
+     * same question getMarkdownLinkUrl() asks before it turns a link inward.
+     * ProjectNode::addInternalTarget() refuses a second "std:label" of the same
+     * name with an exception and waves "std:title" through, so a registered
+     * label is unique across the manual while a bare heading id is not: the
+     * TYPO3 Core API manual has "Configuration" as a heading often enough that
+     * anchors built from it would have collided nineteen times.
+     *
+     * Asking the same question on both sides is what keeps the two in step. An
+     * id that fails it is written by neither: no anchor here, and a permalink
+     * rather than a "#" over there.
+     *
+     * @param array{env: RenderContext} $context
+     * @return list<string>
+     */
+    public function getMarkdownSectionAnchors(array $context, SectionNode $sectionNode): array
+    {
+        $projectNode = $this->getRenderContext($context)->getProjectNode();
+
+        $candidates = [];
+        foreach ($sectionNode->getChildren() as $childNode) {
+            if ($childNode instanceof AnchorNode) {
+                $candidates[] = $childNode->toString();
+            }
+        }
+
+        $candidates[] = $sectionNode->getTitle()->getId();
+
+        $anchors = [];
+        foreach ($candidates as $candidate) {
+            if ($candidate === '') {
+                continue;
+            }
+
+            $anchor = $this->anchorNormalizer->reduceAnchor($candidate);
+            if (!AddressableAnchors::isAddressable($projectNode, $anchor)) {
+                continue;
+            }
+
+            $anchors[] = $anchor;
+        }
+
+        return array_values(array_unique($anchors));
+    }
+
+    /**
+     * The id a heading carries: in the HTML section it sits in, in the
+     * "#" its permalink button offers, and in the per-page Markdown.
+     *
+     * The explicit label of the section where it has one, and the id derived
+     * from the heading otherwise. The label is what a permalink resolves
+     * against, and it is what the author wrote down; the derived id is
+     * generated, and generated second -- a section labelled ".. _session-data:"
+     * under the heading "Session data" yields the id "session-data-1", because
+     * the label already holds "session-data". Writing that into the Markdown
+     * named the page by its accident rather than by its name.
+     *
+     * The HTML keeps both -- the id on the section, the label beside it as
+     * "data-rst-anchor" -- because a page there can carry two. A Markdown
+     * heading carries one, so it carries the one that means something.
+     *
+     * Safe to change: the per-page Markdown links by permalink and writes no
+     * "#" of its own, so no link in it points at the id this replaces.
+     *
+     * @param array{env: RenderContext} $context
+     */
+    public function getHeadingId(array $context, TitleNode $titleNode): string
+    {
+        $renderContext = $this->getRenderContext($context);
+        $document = $this->currentDocument($renderContext);
+        $section = $document === null ? null : $this->sectionOf($document, $titleNode);
+        if ($section !== null) {
+            $label = $this->getAnchorIdOfSection($context, $section);
+            if ($label !== '') {
+                return $label;
+            }
+        }
+
+        return $titleNode->getId();
+    }
+
+    /**
+     * The id of the section this anchor gave its name to, or "" when it gave it
+     * to none.
+     *
+     * A section with a label is written with that label as its id, so the empty
+     * anchor element the library renders for the same label would repeat it --
+     * and an id may occur once in a document. The template asks this before
+     * writing the anchor, and leaves it out when the section already carries
+     * the very same id.
+     *
+     * The comparison is on the id, not on the anchor being first: a label is
+     * normalised on its way into the section id, so an anchor whose spelling
+     * survives that differently still has to be written, or the name it defines
+     * would be gone from the page.
+     *
+     * @param array{env: RenderContext} $context
+     */
+    public function getSectionIdOfAnchor(array $context, AnchorNode $anchorNode): string
+    {
+        $renderContext = $this->getRenderContext($context);
+        $document = $this->currentDocument($renderContext);
+        $section = $document === null ? null : $this->sectionOfAnchor($document, $anchorNode);
+        if ($section === null) {
+            return '';
+        }
+
+        return $this->getAnchorIdOfSection($context, $section);
+    }
+
+    /**
+     * The section holding this anchor as a direct child, or null.
+     *
+     * Only a direct child names a section; an anchor further down the page
+     * belongs to whatever follows it and keeps its element.
+     *
+     * @param CompoundNode<Node> $node
+     */
+    private function sectionOfAnchor(CompoundNode $node, AnchorNode $anchorNode): SectionNode|null
+    {
+        foreach ($node->getChildren() as $child) {
+            if (!$child instanceof SectionNode) {
+                continue;
+            }
+
+            foreach ($child->getChildren() as $sectionChild) {
+                if ($sectionChild === $anchorNode) {
+                    return $child;
+                }
+            }
+
+            $found = $this->sectionOfAnchor($child, $anchorNode);
+            if ($found !== null) {
+                return $found;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The section a heading belongs to, found by identity.
+     *
+     * The template that renders a heading is handed the title alone, and a
+     * title does not know its section. Walking the document to find it again
+     * keeps this stateless, which matters more here than the cost: a page has
+     * tens of sections, not thousands.
+     *
+     * @param CompoundNode<Node> $node
+     */
+    private function sectionOf(CompoundNode $node, TitleNode $titleNode): SectionNode|null
+    {
+        foreach ($node->getChildren() as $child) {
+            if ($child instanceof SectionNode) {
+                if ($child->getTitle() === $titleNode) {
+                    return $child;
+                }
+
+                $found = $this->sectionOf($child, $titleNode);
+                if ($found !== null) {
+                    return $found;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether this document is the sitemap of the manual.
+     *
+     * A sitemap holds nothing but its title in the source; the page tree below
+     * it is assembled by "sitemap.html". Markdown does not use that template,
+     * so the page would contribute a heading with nothing under it -- and a
+     * list of every page is what the single Markdown file already is.
+     *
+     * Recognised by ":template: sitemap.html", the same marker isNoSearch()
+     * uses to keep sitemaps out of the search index. Deliberately this one
+     * template rather than any ":template:": another such page may well carry
+     * content worth having.
+     */
+    public function isSitemap(DocumentNode $document): bool
+    {
+        foreach ($document->getHeaderNodes() as $headerNode) {
+            if ($headerNode instanceof TemplateNode && $headerNode->getValue() === 'sitemap.html') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * What a TYPO3 Core Changelog entry says about itself beyond its title, for
+     * the front matter of its Markdown. Returns [] for every other manual.
+     *
+     * An entry carries things no other page does, and every one of them is lost
+     * on the way into Markdown: the release the change went into, which is the
+     * first thing anybody asks of a changelog entry, and its major on its own as
+     * a number, so that filtering for everything that landed in TYPO3 13 does
+     * not mean matching a string prefix against "13.0" through "13.4.x"; the
+     * kind of change -- breaking, feature, deprecation, important -- which is
+     * what a reader filters on first, with the Forge issue and its URL; and the
+     * tags the entry is categorised by.
+     *
+     * Read by ChangelogEntry, which the JSON index reads as well, so the front
+     * matter of an entry and the line about it in the index cannot disagree.
+     *
+     * @param array{env: RenderContext} $context
+     * @return array<string, string|int|list<string>>
+     */
+    public function getChangelogMetadata(array $context): array
+    {
+        if ($this->themeSettings->getSettings('interlink_shortcode') !== 'changelog') {
+            return [];
+        }
+
+        $document = $this->currentDocument($this->getRenderContext($context));
+        if ($document === null) {
+            return [];
+        }
+
+        $metadata = [];
+
+        $version = $this->changelogEntry->version($document);
+        if ($version !== '') {
+            $metadata['typo3-version'] = $version;
+            $metadata['typo3-major'] = (int) $version;
+        }
+
+        $kind = $this->changelogEntry->kind($document);
+        if ($kind !== null) {
+            $metadata['type'] = $kind['type'];
+            $metadata['issue'] = $kind['issue'];
+            $metadata['forge'] = self::FORGE_ISSUE_URL . $kind['issue'];
+        }
+
+        $tags = $this->changelogEntry->tags($document);
+        if ($tags !== []) {
+            $metadata['tags'] = $tags;
+        }
+
+        return $metadata;
+    }
+
+    /** The document being rendered, or null when it cannot be had. */
+    private function currentDocument(RenderContext $renderContext): DocumentNode|null
+    {
+        $entry = $renderContext->getCurrentDocumentEntry();
+        if ($entry === null) {
+            return null;
+        }
+
+        try {
+            return $renderContext->getDocumentNodeForEntry($entry);
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /**
      * @param array{env: RenderContext} $context
      */
     public function getPermalink(array $context, SectionNode $sectionNode): string
@@ -340,6 +651,48 @@ final class TwigExtension extends AbstractExtension
 
         $githubDirectory = trim($this->themeSettings->getSettings('edit_on_github_directory', 'Documentation'), '/');
         return $gitHubPerPageLink ?? sprintf("https://github.com/%s/edit/%s/%s/%s", $githubButton, $githubBranch, $githubDirectory, $sourceFile);
+    }
+
+    /**
+     * The page's source file on the forge it is maintained in.
+     *
+     * The rendered output no longer ships the reStructuredText itself -- it
+     * lives in the project's repository, which is where a reader following
+     * "view source" wants to end up anyway, with history and blame attached.
+     *
+     * Returns an empty string when no repository is configured, in which case
+     * the menu entry is left out rather than pointing nowhere.
+     *
+     * @param array{env: RenderContext} $context
+     */
+    public function getViewSourceLink(array $context): string
+    {
+        $sourceFile = $this->getSourceFilename($context);
+        if ($sourceFile === '') {
+            return '';
+        }
+
+        $branch = $this->themeSettings->getSettings('edit_on_github_branch', 'main');
+        $directory = trim($this->themeSettings->getSettings('edit_on_github_directory', 'Documentation'), '/');
+
+        $github = $this->themeSettings->getSettings('edit_on_github');
+        if ($github !== '') {
+            return sprintf('https://github.com/%s/blob/%s/%s/%s', $github, $branch, $directory, $sourceFile);
+        }
+
+        // No GitHub setting exists for GitLab, but "project_repository" already
+        // carries the repository URL and is validated for the same hosts as the
+        // issue links.
+        $repository = rtrim($this->themeSettings->getSettings('project_repository'), '/');
+        if (str_starts_with($repository, 'https://gitlab.com/')) {
+            return sprintf('%s/-/blob/%s/%s/%s', $repository, $branch, $directory, $sourceFile);
+        }
+
+        if (str_starts_with($repository, 'https://github.com/')) {
+            return sprintf('%s/blob/%s/%s/%s', $repository, $branch, $directory, $sourceFile);
+        }
+
+        return '';
     }
 
     private function getEditOnGitHubLinkPerPage(RenderContext $renderContext): string|null
@@ -533,6 +886,374 @@ final class TwigExtension extends AbstractExtension
         } catch (\Exception) {
             return '';
         }
+    }
+
+    /**
+     * Turn a link in the Markdown output into a permalink.
+     *
+     * A Markdown file is meant to be downloaded and read away from the site it
+     * came from, so a relative link would be dead on arrival. Every internal
+     * target carries an anchor, which is exactly what the permalink service
+     * resolves, so "interlink_shortcode" plus that anchor is enough to build a
+     * URL that keeps working -- and keeps working across versions, which a
+     * hard-coded manual URL would not.
+     *
+     * Left alone: anything with a scheme (external links, mailto:) and links
+     * without an anchor, which in practice are images. Without
+     * "interlink_shortcode" no permalink can be built, so those fall back to
+     * the relative HTML page.
+     *
+     * @param array{env: RenderContext} $context
+     */
+    public function getMarkdownLinkUrl(array $context, string $url): string
+    {
+        if ($url === '' || preg_match('#^[a-z][a-z0-9+.-]*:#i', $url) === 1) {
+            return $url;
+        }
+
+        $anchorPosition = strpos($url, '#');
+        $anchor = $anchorPosition === false ? '' : substr($url, $anchorPosition + 1);
+        $interlink = $this->themeSettings->getSettings('interlink_shortcode');
+
+        if ($anchor === '') {
+            // "#" is a reference to the page being rendered. That is fine in a
+            // browser, but a downloaded file should still point somewhere, so
+            // it becomes the permalink of this very page.
+            $anchor = $url === '#'
+                ? ($this->getRenderContext($context)->getCurrentDocumentEntry()?->getTitle()->getId() ?? '')
+                : $this->anchorOfLinkedDocument($context, $url);
+        }
+
+        // The fragment of a rendered URL keeps the casing of the element id it
+        // points at, which HTML resolves fine. The permalink service looks the
+        // target up in the inventory, where it is registered normalised, so the
+        // anchor has to be reduced the same way getPermalink() does it.
+        if ($anchor !== '') {
+            $anchor = $this->anchorNormalizer->reduceAnchor($anchor);
+        }
+
+        // In the single file every page of this manual is present, so a link to
+        // one of them belongs inside the document rather than out on the web.
+        //
+        // Only if the target is a registered label, though. A label is unique
+        // across the manual -- addInternalTarget() refuses a second one -- so
+        // the anchor written for it is unambiguous. Anything else, a heading id
+        // in particular, may occur in a dozen documents, and an anchor built
+        // from it would silently resolve to the first of them. Those keep the
+        // permalink, which at least lands where it says.
+        $renderContext = $this->getRenderContext($context);
+        if (
+            $anchor !== ''
+            && $renderContext->getOutputFormat() === 'singlemd'
+            && AddressableAnchors::isAddressable($renderContext->getProjectNode(), $anchor)
+        ) {
+            return '#' . $anchor;
+        }
+
+        if ($anchor === '' || $interlink === '') {
+            $this->logUnresolvedMarkdownLink($context, $url, $interlink === '');
+
+            // The URL generator appended the current output format, so an
+            // internal link reads "Feature.md" here -- or "Feature.singlemd"
+            // when the whole project is rendered into one file; the HTML page
+            // is the one worth pointing at in either case.
+            return preg_replace('/\.(?:single)?md(?=$|#)/', '.html', $url) ?? $url;
+        }
+
+        return $this->permalinks->forAnchor($anchor, $this->rawProjectVersion($this->getRenderContext($context)));
+    }
+
+    /**
+     * The project version a permalink and a metadata field can carry, or "" when
+     * there is none. Spelled by Permalinks; reported here, because only a page
+     * being rendered can say which file the unusable version was found in.
+     */
+    private function normalizedProjectVersion(RenderContext $renderContext): string
+    {
+        $raw = $this->rawProjectVersion($renderContext);
+        $version = $this->permalinks->normalizeVersion($raw);
+        if ($version === '' && trim((string) $raw) !== '') {
+            $this->reportUnusablePermalinkVersion($renderContext, explode(' ', trim((string) $raw))[0]);
+        }
+
+        return $version;
+    }
+
+    private function rawProjectVersion(RenderContext $renderContext): string|null
+    {
+        return $renderContext->getProjectNode()->getVersion();
+    }
+
+    /**
+     * The permalink of the document being rendered: the one URL that names this
+     * page no matter where its file ends up or what the page is later renamed
+     * to. "" when the manual declares no interlink shortcode, or the page has
+     * no anchor to be named by.
+     *
+     * Written into the Markdown front matter, and into the HTML head as the
+     * canonical URL of the page.
+     *
+     * @param array{env: RenderContext} $context
+     */
+    public function getPagePermalink(array $context): string
+    {
+        $interlink = $this->themeSettings->getSettings('interlink_shortcode');
+        $renderContext = $this->getRenderContext($context);
+
+        // The head is rendered for things that are not a document too -- the
+        // sitemap and the main menu among them -- and a page is what a permalink
+        // names. Asking for the current entry there throws.
+        if (!$renderContext->hasCurrentFileName()) {
+            return '';
+        }
+
+        $entry = $renderContext->getCurrentDocumentEntry();
+        $anchor = $entry === null ? '' : $this->documentAnchor($renderContext, $entry);
+        if ($interlink === '' || $anchor === '') {
+            return '';
+        }
+
+        return $this->permalinks->forAnchor($anchor, $this->rawProjectVersion($renderContext));
+    }
+
+    /** @param array{env: RenderContext} $context */
+    public function getMarkdownVersion(array $context): string
+    {
+        return $this->normalizedProjectVersion($this->getRenderContext($context));
+    }
+
+    /**
+     * Whether the document being rendered is the manual's start page.
+     *
+     * Worth stating rather than leaving to be guessed: once the files lie
+     * flat in a directory, the entry point is no longer the one at the top,
+     * and "Index.rst" is a name several documents in a manual share.
+     *
+     * @param array{env: RenderContext} $context
+     */
+    public function isMarkdownStartPage(array $context): bool
+    {
+        $renderContext = $this->getRenderContext($context);
+        $entry = $renderContext->getCurrentDocumentEntry();
+        if ($entry === null) {
+            return false;
+        }
+
+        try {
+            return $entry->getFile() === $renderContext->getProjectNode()->getRootDocumentEntry()->getFile();
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * Reported once per document: the version is a property of the project, so
+     * every link on the page is missing it for the same reason.
+     */
+    private function reportUnusablePermalinkVersion(RenderContext $renderContext, string $version): void
+    {
+        $document = $renderContext->hasCurrentFileName() ? $renderContext->getCurrentFileName() : '';
+        if (isset($this->reportedMissingVersion[$document])) {
+            return;
+        }
+
+        $this->reportedMissingVersion[$document] = true;
+        $this->logger->warning(
+            sprintf(
+                'The version "%s" from the guides.xml cannot go into a URL, so the Markdown permalinks of this '
+                . 'manual resolve to its latest stable release instead of to this version. ',
+                $version,
+            ),
+            $renderContext->getLoggerInformation(),
+        );
+    }
+
+    /**
+     * A link left relative in the Markdown output is dead once the file is
+     * downloaded, so it is worth reporting rather than shipping quietly.
+     *
+     * A missing "interlink_shortcode" affects every link on the page alike, so
+     * it is reported once per document instead of once per link; an
+     * unresolvable target is specific to that link and is reported each time.
+     *
+     * @param array{env: RenderContext} $context
+     */
+    private function logUnresolvedMarkdownLink(array $context, string $url, bool $missingShortcode): void
+    {
+        $renderContext = $this->getRenderContext($context);
+
+        if ($missingShortcode) {
+            $document = $renderContext->hasCurrentFileName() ? $renderContext->getCurrentFileName() : '';
+            if (isset($this->reportedMissingShortcode[$document])) {
+                return;
+            }
+
+            $this->reportedMissingShortcode[$document] = true;
+
+            // Not a warning: a manual without "interlink-shortcode" cannot have
+            // permalinks at all, so this describes how the project is set up
+            // rather than something broken in the page. Warning per document
+            // would drown the links that genuinely failed to resolve.
+            $this->logger->info(
+                'Links in the Markdown output stay relative because "interlink-shortcode" is not set in the guides.xml. ',
+                $renderContext->getLoggerInformation(),
+            );
+
+            return;
+        }
+
+        $this->logger->warning(
+            sprintf('The Markdown link to "%s" could not be resolved to a permalink and stays relative. ', $url),
+            $renderContext->getLoggerInformation(),
+        );
+    }
+
+    /**
+     * The anchor of a page linked without one, so it too can become a permalink.
+     *
+     * A ":doc:" reference points at a page rather than a label, so the
+     * generated URL carries no fragment. The target is in this same manual,
+     * though, so its document entry is known and its title carries the anchor.
+     *
+     * Returns an empty string for anything that is not a document of this
+     * manual -- an image, most commonly.
+     *
+     * @param array{env: RenderContext} $context
+     */
+    private function anchorOfLinkedDocument(array $context, string $url): string
+    {
+        $renderContext = $this->getRenderContext($context);
+        $path = preg_replace('/\.[A-Za-z0-9]+$/', '', $url);
+        if ($path === null || $path === '') {
+            return '';
+        }
+
+        try {
+            $canonical = $this->documentNameResolver->canonicalUrl($renderContext->getDirName(), $path);
+            $entry = $renderContext->getProjectNode()->findDocumentEntry($canonical);
+        } catch (Throwable) {
+            return '';
+        }
+
+        return $entry === null ? '' : $this->documentAnchor($renderContext, $entry);
+    }
+
+    /**
+     * The anchor that identifies one document, taken from its own label.
+     *
+     * Not the title's id: titles repeat, and the pipeline exempts "std:title"
+     * from its duplicate-anchor check for exactly that reason, so only one of
+     * several pages sharing a title ends up registered under it. The TYPO3
+     * changelog shows what that costs -- the same entry backported to three
+     * versions carries three distinct labels ("breaking-84843",
+     * "breaking-84843-1668719172", "breaking-84843-1668719171") but a single
+     * title anchor, which resolves to whichever of the three won. Building a
+     * permalink from the title would silently point at the wrong version.
+     *
+     * Falls back to the title id when a document declares no label of its own,
+     * which is the best available identifier in that case.
+     */
+    private function documentAnchor(RenderContext $renderContext, DocumentEntryNode $entry): string
+    {
+        try {
+            $document = $renderContext->getDocumentNodeForEntry($entry);
+        } catch (Throwable) {
+            $document = null;
+        }
+
+        foreach ($document?->getChildren() ?? [] as $child) {
+            if (!$child instanceof SectionNode) {
+                continue;
+            }
+
+            foreach ($child->getChildren() as $sectionChild) {
+                if ($sectionChild instanceof AnchorNode) {
+                    return $this->anchorNormalizer->reduceAnchor($sectionChild->toString());
+                }
+            }
+
+            break;
+        }
+
+        $id = $entry->getTitle()->getId();
+
+        return $id === '' ? '' : $this->anchorNormalizer->reduceAnchor($id);
+    }
+
+    /**
+     * The Markdown rendering of the current page, which is written next to the
+     * HTML file with the same base name.
+     *
+     * Machine consumers want the content without the surrounding HTML; the
+     * Markdown has includes, substitutions and interlinks resolved, which the
+     * reStructuredText source does not.
+     *
+     * @param array{env: RenderContext} $context
+     */
+    /**
+     * The name the Markdown of this page is saved under.
+     *
+     * Built from the same two parts as its permalink, the manual's
+     * "interlink_shortcode" and the page's anchor, so a file picked out of a
+     * download folder still says which page of which manual it is -- and files
+     * collected from several manuals cannot collide, where every overview page
+     * would otherwise arrive as "index.md" and overwrite the last.
+     *
+     * Returns an empty string when either part is missing, which leaves the
+     * browser to name the file from the URL as before.
+     *
+     * @param array{env: RenderContext} $context
+     */
+    public function getMarkdownDownloadName(array $context): string
+    {
+        if ($this->getMarkdownAlternate($context) === '') {
+            return '';
+        }
+
+        $interlink = $this->themeSettings->getSettings('interlink_shortcode');
+        $renderContext = $this->getRenderContext($context);
+        $entry = $renderContext->getCurrentDocumentEntry();
+        $anchor = $entry === null ? '' : $this->documentAnchor($renderContext, $entry);
+        if ($interlink === '' || $anchor === '') {
+            return '';
+        }
+
+        $prefix = $this->anchorNormalizer->reduceAnchor($interlink);
+
+        // Changelog anchors already carry the manual's own name; repeating it
+        // would read as "changelog-changelog-feature-...".
+        if ($anchor === $prefix || str_starts_with($anchor, $prefix . '-')) {
+            return $anchor . '.md';
+        }
+
+        return $prefix . '-' . $anchor . '.md';
+    }
+
+    /**
+     * The Markdown rendering of the current page, which is written next to the
+     * HTML file with the same base name.
+     *
+     * Machine consumers want the content without the surrounding HTML; the
+     * Markdown has includes, substitutions and interlinks resolved, which the
+     * reStructuredText source does not.
+     *
+     * @param array{env: RenderContext} $context
+     */
+    public function getMarkdownAlternate(array $context): string
+    {
+        // No Markdown is written when the project opted out, so neither the
+        // head link nor the menu entry may promise one.
+        $renderMarkdown = strtolower(trim($this->themeSettings->getSettings('render_markdown', 'true')));
+        if (in_array($renderMarkdown, ['', 'false', '0', 'off', 'no'], true)) {
+            return '';
+        }
+
+        $renderContext = $this->getRenderContext($context);
+        if (!$renderContext->hasCurrentFileName()) {
+            return '';
+        }
+
+        return basename($renderContext->getCurrentFileName()) . '.md';
     }
 
     /**

@@ -5,10 +5,10 @@ dl.field-list {
     }
 
     & > dt:after {
-        content: ":";
+        content: ':' / '';
     }
 }
-@include media-breakpoint-up(md) {
+@include media-breakpoint-up(sm) {
 
     dl.field-list {
         display: grid;

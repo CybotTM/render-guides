@@ -40,7 +40,7 @@
     });
   }
 
-  // Adds the EventListener for the toggle Button of the complete menu (mobile)
+  // Mobile TOC menu toggle
   function makeTocMenuExpandable() {
     const tocToggle = document.getElementById('toc-toggle');
     tocToggle.addEventListener('click', () => toggleNavigation(tocToggle), true);
@@ -52,7 +52,18 @@
     tocToggle.setAttribute('aria-expanded', tocCollapse.classList.contains('show'));
   }
 
+  // Mobile search toggle: forwards to the GlobalSearch trigger button, which opens the search modal directly
+  function makeSearchToggle() {
+    const searchToggle = document.getElementById('search-toggle');
+    if (!searchToggle) return;
+    searchToggle.addEventListener('click', () => {
+      document.getElementById('global-search-root')?.querySelector('button')?.click();
+    }, true);
+  }
+
   makeTocMenuExpandable();
+  makeSearchToggle();
+
   window.addEventListener('all-documentation-menu-loaded', () => {
     makeMenuExpandable();
   })

@@ -115,13 +115,59 @@ a.code-block-edit {
     font-family: $font-family-monospace;
     border-radius: $border-radius;
     border: 2px solid $white;
-    background: $gray-100;
+    background-color: $gray-100;
     padding: 0.25em 0.5em;
     line-height: 27px;
+
+    &:has(button) {
+        padding-right: 0;
+    }
+
+    button {
+        background-color: $gray-100;
+        border-color: $gray-100;
+        margin-top: -0.2em;
+        padding: 0.2em;
+        min-height: unset !important;
+        box-shadow: unset !important;
+    }
 }
 
 .code-inline-long {
     @extend .text-break;
+}
+
+/**
+ * Inside a headline the inline code is the headline, not a chip inside a
+ * sentence. It drops the box and the fixed line height - the latter is sized
+ * for body copy and clips at heading sizes - and keeps only the monospace
+ * face. The 85% of the global "code" rule keeps it optically level with the
+ * surrounding heading.
+ */
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.h1,
+.h2,
+.h3,
+.h4,
+.h5,
+.h6 {
+
+    .code-inline {
+        background-color: transparent;
+        border: 0;
+        line-height: inherit;
+        padding: 0;
+
+        button {
+            line-height: 1;
+        }
+    }
 }
 
 /** uses "popover" for all code roles that have tooltips **/

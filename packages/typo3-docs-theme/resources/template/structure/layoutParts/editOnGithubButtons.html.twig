@@ -1,23 +1,46 @@
 {%- set reportIssueLink = getReportIssueLink() -%}
 {%- if (reportIssueLink) %}
     <a class="dropdown-item d-flex align-items-center gap-2" href="{{ reportIssueLink }}" id="btnReportIssue" rel="nofollow noopener" target="_blank">
-        <i class="fas fa-comment-dots"></i>
+        <i class="fa-solid fa-comment-dots"></i>
         Give feedback
     </a>
 {% endif -%}
 
+{#- While "copy_sources" is on, the reStructuredText is published beside the
+    HTML and the entry links to it -- rendering this link is also what writes
+    the file. Once it is switched off the source is only in the repository, so
+    the entry points there instead, and is left out when no repository is
+    configured. -#}
 {%- set copySources = getSettings('copy_sources') -%}
 {%- if (copySources) %}
-    <a class="dropdown-item d-flex align-items-center gap-2" href="{{ copyDownload(sourceFilename(), '_sources/' ~ sourceFilename() ~ '.txt') }}" rel="nofollow noopener" target="_blank">
-        <i class="fas fa-code"></i>
+    <a class="dropdown-item d-flex align-items-center gap-2" href="{{ copyDownload(sourceFilename(), '_sources/' ~ sourceFilename() ~ '.txt') }}" id="btnViewSource" rel="nofollow noopener" target="_blank">
+        <i class="fa-solid fa-code"></i>
         View source
+    </a>
+{% else -%}
+{%- set viewSourceLink = getViewSourceLink() -%}
+{%- if (viewSourceLink) %}
+    <a class="dropdown-item d-flex align-items-center gap-2" href="{{ viewSourceLink }}" id="btnViewSource" rel="nofollow noopener" target="_blank">
+        <i class="fa-solid fa-code"></i>
+        View source
+    </a>
+{% endif -%}
+{% endif -%}
+
+{#- The same page as Markdown, for reading in the browser. Downloading it is
+    a button of its own next to the breadcrumb. -#}
+{%- set markdownLink = markdownAlternate() -%}
+{%- if (markdownLink) %}
+    <a class="dropdown-item d-flex align-items-center gap-2" href="{{ markdownLink }}" id="btnViewMarkdown" rel="nofollow noopener" target="_blank">
+        <i class="fa-solid fa-file-lines"></i>
+        View as Markdown
     </a>
 {% endif -%}
 
 {%- set howtoEditButton = getSettings('how_to_edit') -%}
 {%- if (howtoEditButton) %}
     <a class="dropdown-item d-flex align-items-center gap-2" href="{{ howtoEditButton }}" id="btnHowToEdit" rel="nofollow noopener" target="_blank">
-        <i class="fas fa-info-circle"></i>
+        <i class="fa-solid fa-circle-info"></i>
         How to edit
     </a>
 {% endif -%}
@@ -25,7 +48,7 @@
 {%- set gitHubLink = getEditOnGitHubLink() -%}
 {%- if (gitHubLink) %}
     <a class="dropdown-item d-flex align-items-center gap-2" href="{{ gitHubLink }}" id="btnEditOnGitHub" rel="nofollow noopener" target="_blank">
-        <i class="fab fa-github"></i>
+        <i class="fa-brands fa-github"></i>
         Edit on GitHub
     </a>
 {% endif -%}
